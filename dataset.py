@@ -54,7 +54,7 @@ class SocialPersonaDataset(Dataset):
         )
 
         # 2. 处理当前对话
-        instruction_text = f"<|im_start|>user\n{current_context}<|im_end|>\n<|im_start|>assistant\n"
+        instruction_text = f"<|im_start|>user\n{current_context} /no_think<|im_end|>\n<|im_start|>assistant\n"
         full_text = instruction_text + target_response + "<|im_end|>"
 
         target_tokens = self.tokenizer(
@@ -62,8 +62,7 @@ class SocialPersonaDataset(Dataset):
             max_length=self.max_target_len,
             truncation=True,
             return_tensors="pt",
-            add_special_tokens=False,
-            enable_thinking=False
+            add_special_tokens=False
         )
 
         instruction_tokens = self.tokenizer(
@@ -71,8 +70,7 @@ class SocialPersonaDataset(Dataset):
             max_length=self.max_target_len,
             truncation=True,
             return_tensors="pt",
-            add_special_tokens=False,
-            enable_thinking=False
+            add_special_tokens=False
         )
 
         # 3. 构造 Labels
