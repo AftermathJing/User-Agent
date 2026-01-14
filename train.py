@@ -63,7 +63,7 @@ class TrainingConfig:
     # 定义 UniversalPerceiverBlock 和 UniversalPersonaEncoder 的核心参数
 
     universal_dim: int = 1024  # Latent 向量的维度 (Perceiver 内部维度)
-    num_latents: int = 64  # Learnable Latent 的数量 (记忆槽位数量，建议 32-128)
+    num_latents: int = 32  # Learnable Latent 的数量 (记忆槽位数量，建议 32-128)
     encoder_layers: int = 4  # Perceiver Block 的堆叠层数 (深度)
     encoder_heads: int = 8  # Multihead Attention 的头数
     encoder_dropout: float = 0.1  # Encoder 内部的 Dropout 比率
@@ -220,7 +220,7 @@ def train():
 
     # DDP Wrapping
     # find_unused_parameters=True 因为 base_model (LLM) 被冻结，参数不参与更新
-    agent = DDP(agent, device_ids=[local_rank], find_unused_parameters=True)
+    agent = DDP(agent, device_ids=[local_rank], find_unused_parameters=False)
 
     # E. 优化器与 Scheduler
     # 过滤掉不需要梯度的参数
@@ -313,7 +313,7 @@ def train():
                     progress_bar.update(1)
 
                     # === 新增：定期打印生成样例 ===
-                    if global_step % 100 == 0:  # 每 100 步查看一次效果
+                    if global_step % 10 == 0:  # 每 10 步查看一次效果(test)
                         print(f"\n[Step {global_step}] Generating Sample...")
 
                         # 1. 从当前 Batch 中取第一条数据 (index 0)
