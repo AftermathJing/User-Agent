@@ -251,7 +251,7 @@ class PersonaAgent(nn.Module):
         # 这里的 mask 传递逻辑要和你 forward 里保持一致
         # 假设你已经更新了 Adapter 支持 mask
         encoder_out = self.encoder(history_embeds, history_attention_mask)
-        soft_prompts = self.adapter(encoder_out, x_key_padding_mask=history_attention_mask)  # (B, 32, Dim)
+        soft_prompts = self.adapter(encoder_out)  # (B, 32, Dim)
 
         # 2. 获取当前指令的 Embeddings
         instruction_embeds = self.llm.get_input_embeddings()(instruction_input_ids)  # (B, L_instr, Dim)
