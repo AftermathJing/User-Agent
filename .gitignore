@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.jsonl
 *.json
+checkpoints/
 
 # C extensions
 *.so
