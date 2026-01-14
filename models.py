@@ -160,8 +160,7 @@ class PersonaAgent(nn.Module):
             config.base_model,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            device_map="auto",  # 或者由 DDP 控制 device
-            enable_thinking=False
+            device_map="auto"  # 或者由 DDP 控制 device
         )
         # 冻结 LLM
         for param in self.llm.parameters():
@@ -234,6 +233,54 @@ class PersonaAgent(nn.Module):
         loss_t2i = F.cross_entropy(sim_matrix_t, labels)
 
         return (loss_i2t + loss_t2i) / 2
+
+    @torch.no_grad()
+    def generate_response(self, history_input_ids, history_attention_mask, instruction_input_ids, max_new_tokens=128):
+        """
+        用于在训练中进行采样测试。
+        Args:
+            history_input_ids: 历史记录的 Token IDs (B, L_hist)
+            history_attention_mask: 历史记录 Mask
+            instruction_input_ids: 当前对话/指令的 Token IDs (B, L_instr) - 不包含回复部分
+        Returns:
+            generated_ids: 模型生成的 Token IDs
+        """
+        # 1. 生成 Persona Soft Prompts
+        history_embeds = self.llm.get_input_embeddings()(history_input_ids)
+
+        # 这里的 mask 传递逻辑要和你 forward 里保持一致
+        # 假设你已经更新了 Adapter 支持 mask
+        encoder_out = self.encoder(history_embeds, history_attention_mask)
+        soft_prompts = self.adapter(encoder_out, x_key_padding_mask=history_attention_mask)  # (B, 32, Dim)
+
+        # 2. 获取当前指令的 Embeddings
+        instruction_embeds = self.llm.get_input_embeddings()(instruction_input_ids)  # (B, L_instr, Dim)
+
+        # 3. 拼接 Embeddings: [Soft Prompts, Instruction]
+        inputs_embeds = torch.cat([soft_prompts, instruction_embeds], dim=1)
+
+        # 4. 调用 LLM 的 generate
+        # 注意：因为我们直接传了 embeddings，所以不需要传 input_ids
+        # 但我们需要手动构造 attention_mask
+        B, N_prompts, _ = soft_prompts.shape
+        B, N_instr, _ = instruction_embeds.shape
+
+        # 构造全 1 的 Mask (假设推理时没有 padding，或者你自己处理 padding)
+        # 注意 device 要一致
+        generation_mask = torch.ones((B, N_prompts + N_instr), device=inputs_embeds.device, dtype=torch.long)
+
+        outputs = self.llm.generate(
+            inputs_embeds=inputs_embeds,
+            attention_mask=generation_mask,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=self.llm.config.pad_token_id,
+            eos_token_id=self.llm.config.eos_token_id,
+            do_sample=True,  # 开启采样
+            temperature=0.7,  # 温度
+            top_p=0.9
+        )
+
+        return outputs
 
     def forward(self, history_input_ids, history_attention_mask, llm_input_ids, llm_labels, llm_attention_mask):
         # 1. 提取 Embedding

@@ -62,7 +62,17 @@ class SocialPersonaDataset(Dataset):
             max_length=self.max_target_len,
             truncation=True,
             return_tensors="pt",
-            add_special_tokens=False
+            add_special_tokens=False,
+            enable_thinking=False
+        )
+
+        instruction_tokens = self.tokenizer(
+            instruction_text,
+            max_length=self.max_target_len,
+            truncation=True,
+            return_tensors="pt",
+            add_special_tokens=False,
+            enable_thinking=False
         )
 
         # 3. 构造 Labels
@@ -79,7 +89,9 @@ class SocialPersonaDataset(Dataset):
             "history_attention_mask": history_tokens.attention_mask[0],
             "llm_input_ids": input_ids,
             "llm_labels": labels,
-            "llm_attention_mask": target_tokens.attention_mask[0]
+            "llm_attention_mask": target_tokens.attention_mask[0],
+            "instruction_input_ids": instruction_tokens.input_ids[0],  # 新增：纯指令部分
+            "instruction_attention_mask": instruction_tokens.attention_mask[0]
         }
 
 
@@ -97,6 +109,8 @@ def collate_fn(batch):
     llm_ids = [item['llm_input_ids'] for item in batch]
     llm_labels = [item['llm_labels'] for item in batch]
     llm_masks = [item['llm_attention_mask'] for item in batch]
+    instruction_ids = [item['instruction_input_ids'] for item in batch]
+    instruction_masks = [item['instruction_attention_mask'] for item in batch]
 
     pad_val = 0
     label_pad_val = -100
@@ -107,7 +121,9 @@ def collate_fn(batch):
         "history_attention_mask": pad_sequence(history_masks, batch_first=True, padding_value=0),
         "llm_input_ids": pad_sequence(llm_ids, batch_first=True, padding_value=pad_val),
         "llm_labels": pad_sequence(llm_labels, batch_first=True, padding_value=label_pad_val),
-        "llm_attention_mask": pad_sequence(llm_masks, batch_first=True, padding_value=0)
+        "llm_attention_mask": pad_sequence(llm_masks, batch_first=True, padding_value=0),
+        "instruction_input_ids": pad_sequence(instruction_ids, batch_first=True, padding_value=0),
+        "instruction_attention_mask": pad_sequence(instruction_masks, batch_first=True, padding_value=0),
     }
 
 
