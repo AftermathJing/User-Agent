@@ -85,13 +85,28 @@ class TrainingConfig:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    # 简单起见，这里只列出部分核心参数，实际使用可以把上面的Config全部映射
-    parser.add_argument("--local_rank", type=int, default=-1, help="DDP local rank")
+
+    # --- 必需参数 ---
+    parser.add_argument("--local_rank", type=int, default=-1, help="DDP parameter, do not modify")
+
+    # --- 训练配置 ---
     parser.add_argument("--base_model", type=str, default="/home/wj/Qwen3-8B")
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--data_path", type=str, default="./train.jsonl")
     parser.add_argument("--save_dir", type=str, default="./checkpoints")
+
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--lr", type=float, default=1e-4)
+
+    # !!! 之前缺失的参数导致了报错 !!!
+    parser.add_argument("--grad_accum_steps", type=int, default=4)
+
+    # --- 模型与对比学习参数 (可选，方便命令行调整) ---
+    parser.add_argument("--cl_weight", type=float, default=0.1)
+    parser.add_argument("--cl_temp", type=float, default=0.05)
+    parser.add_argument("--universal_dim", type=int, default=1024)
+    parser.add_argument("--adapter_output_tokens", type=int, default=32)
+
     return parser.parse_args()
 
 
