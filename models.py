@@ -63,7 +63,7 @@ class UniversalPerceiverBlock(nn.Module):
 
 
 class UniversalPersonaEncoder(nn.Module):
-    def __init__(self, input_dim=4096, universal_dim=1024, num_latents=32, num_layers=4, dropout=0.1):
+    def __init__(self, input_dim, universal_dim=1024, num_latents=32, num_layers=4, dropout=0.1, heads=8):
         super().__init__()
         self.universal_dim = universal_dim
         self.num_latents = num_latents
@@ -72,7 +72,7 @@ class UniversalPersonaEncoder(nn.Module):
         self.pos_embed = nn.Embedding(4096, input_dim)
 
         self.blocks = nn.ModuleList([
-            UniversalPerceiverBlock(input_dim, universal_dim, dropout=dropout)
+            UniversalPerceiverBlock(input_dim, universal_dim, heads, dropout=dropout)
             for _ in range(num_layers)
         ])
 
@@ -90,7 +90,7 @@ class UniversalPersonaEncoder(nn.Module):
 
 
 class PersonaAdapter(nn.Module):
-    def __init__(self, universal_dim=1024, target_dim=4096):
+    def __init__(self, target_dim, universal_dim=1024):
         super().__init__()
         self.net = nn.Sequential(
             nn.LayerNorm(universal_dim),
@@ -149,29 +149,42 @@ def all_gather_with_grad(tensor):
 
 
 class PersonaAgent(nn.Module):
-    def __init__(self, base_model_name, universal_dim=1024, cl_weight=0.1, cl_temp=0.05):
+    def __init__(self, config):  # 传入整个 config 对象
         super().__init__()
-        self.cl_weight = cl_weight  # 对比损失权重
-        self.cl_temp = cl_temp  # 温度系数
+        self.config = config
+        self.cl_weight = config.cl_weight
+        self.cl_temp = config.cl_temp
 
-        print(f"Loading Base LLM: {base_model_name}...")
+        print(f"Loading Base LLM: {config.base_model}...")
         self.llm = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
+            config.base_model,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            device_map="auto"
+            device_map="auto",  # 或者由 DDP 控制 device
+            enable_thinking=False
         )
+        # 冻结 LLM
         for param in self.llm.parameters():
             param.requires_grad = False
 
+        # 动态获取 LLM 维度
         llm_dim = self.llm.config.hidden_size
 
-        # 传入 Dropout 参数
-        self.encoder = UniversalPersonaEncoder(input_dim=llm_dim, universal_dim=universal_dim, dropout=0.1)
-        self.adapter = PersonaAdapter(universal_dim=universal_dim, target_dim=llm_dim)
+        # 使用 Config 初始化 Encoder
+        self.encoder = UniversalPersonaEncoder(
+            input_dim=llm_dim,  # 来自 LLM
+            universal_dim=config.universal_dim,
+            num_latents=config.num_latents,  # 新增
+            num_layers=config.encoder_layers,  # 新增
+            dropout=config.encoder_dropout,  # 新增
+            heads=config.encoder_heads  # 需在 Encoder 内部支持传入 heads
+        )
 
-        self.encoder = self.encoder.to(self.llm.device).to(torch.bfloat16)
-        self.adapter = self.adapter.to(self.llm.device).to(torch.bfloat16)
+        # 使用 Config 初始化 Adapter
+        self.adapter = PersonaAdapter(
+            target_dim=llm_dim,
+            universal_dim=config.universal_dim
+        )
 
     def compute_contrastive_loss(self, view1, view2):
         """

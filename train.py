@@ -18,44 +18,76 @@ from models import PersonaAgent
 from dataset import SocialPersonaDataset, collate_fn, UniqueUserBatchSampler
 
 
-# --- 1. 配置管理 ---
 @dataclass
 class TrainingConfig:
-    # 基础模型配置
-    base_model: str = "Qwen/Qwen3-8B"
-    data_path: str = "./train.jsonl"
-    output_dir: str = "./checkpoints"
+    # ==============================
+    # 1. 基础环境与路径配置 (Environment & Paths)
+    # ==============================
+    base_model: str = "/home/wj/Qwen3-8B"  # 基座模型路径
+    data_path: str = "./train.jsonl"  # 训练数据路径
+    output_dir: str = "./checkpoints"  # 检查点保存目录
+    # 运行名称，用于 TensorBoard 和保存目录区分
     run_name: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S"))
+    seed: int = 42  # 全局随机种子
+    num_workers: int = 4  # Dataloader 进程数
 
-    # 训练超参
+    # ==============================
+    # 2. 训练超参数 (Training Hyperparameters)
+    # ==============================
     epochs: int = 3
-    batch_size: int = 4  # 单卡 Batch Size (全局 BS = batch_size * num_gpus)
-    grad_accum_steps: int = 4  # 梯度累积
-    lr: float = 1e-4
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.05
-    max_grad_norm: float = 1.0  # 梯度裁剪
+    batch_size: int = 4  # 单卡 Batch Size (Global BS = batch_size * num_gpus * grad_accum)
+    grad_accum_steps: int = 4  # 梯度累积步数
 
-    # 数据相关
-    max_history_len: int = 2048
-    num_workers: int = 4
+    # 优化器相关
+    lr: float = 1e-4  # 学习率
+    weight_decay: float = 0.01  # 权重衰减
+    warmup_ratio: float = 0.05  # 预热比例
+    max_grad_norm: float = 1.0  # 梯度裁剪阈值
 
-    # 模型特定参数 (对比学习)
-    cl_weight: float = 0.1
-    cl_temp: float = 0.05
-    universal_dim: int = 1024
+    # 系统与日志
+    log_interval: int = 10  # TensorBoard 记录频率 (步数)
+    save_interval_steps: int = 500  # Checkpoint 保存频率 (步数)
 
-    # 系统
-    seed: int = 42
-    log_interval: int = 10  # 多少步记录一次 TensorBoard
-    save_interval_steps: int = 500  # 多少步保存一次 checkpoint (可选)
+    # ==============================
+    # 3. 数据处理参数 (Data Processing)
+    # ==============================
+    max_history_len: int = 2048  # 历史记录最大 Token 数 (输入 Encoder)
+    max_target_len: int = 512  # 回复生成的最大 Token 数
+    max_history_items: int = 50  # 最多保留多少条历史评论
+
+    # ==============================
+    # 4. 模型架构参数 (Model Architecture)
+    # ==============================
+
+    # --- A. Universal Persona Encoder (Perceiver) ---
+    # 定义 UniversalPerceiverBlock 和 UniversalPersonaEncoder 的核心参数
+
+    universal_dim: int = 1024  # Latent 向量的维度 (Perceiver 内部维度)
+    num_latents: int = 64  # Learnable Latent 的数量 (记忆槽位数量，建议 32-128)
+    encoder_layers: int = 4  # Perceiver Block 的堆叠层数 (深度)
+    encoder_heads: int = 8  # Multihead Attention 的头数
+    encoder_dropout: float = 0.1  # Encoder 内部的 Dropout 比率
+
+    # --- B. Persona Adapter ---
+    # Adapter 将 Universal Latents 映射回 LLM 的维度
+    # 注意: target_dim 通常由 base_model 自动决定，不需要在此硬编码
+
+    # --- C. 对比学习 (Contrastive Learning) ---
+    cl_weight: float = 0.1  # 对比损失在总 Loss 中的权重
+    cl_temp: float = 0.05  # InfoNCE 温度系数
+
+    def __post_init__(self):
+        """可以在这里进行参数校验或路径创建"""
+        import os
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir, exist_ok=True)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     # 简单起见，这里只列出部分核心参数，实际使用可以把上面的Config全部映射
     parser.add_argument("--local_rank", type=int, default=-1, help="DDP local rank")
-    parser.add_argument("--base_model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
+    parser.add_argument("--base_model", type=str, default="/home/wj/Qwen3-8B")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=3)
@@ -129,7 +161,9 @@ def train():
     dataset = SocialPersonaDataset(
         config.data_path,
         tokenizer,
-        max_history_len=config.max_history_len
+        max_history_len=config.max_history_len,
+        max_target_len=config.max_target_len,
+        max_history_items=config.max_history_items
     )
 
     # --- DDP Data Sharding ---
@@ -159,13 +193,8 @@ def train():
     if is_master:
         print("Initializing Model...")
 
-    # 确保模型加载到对应 GPU
-    agent = PersonaAgent(
-        config.base_model,
-        universal_dim=config.universal_dim,
-        cl_weight=config.cl_weight,
-        cl_temp=config.cl_temp
-    )
+    # 直接传入 config 对象
+    agent = PersonaAgent(config)
 
     # 这里的 .to() 很重要，确保 module 在 wrap DDP 之前在正确的 device 上
     device = torch.device(f"cuda:{local_rank}")
