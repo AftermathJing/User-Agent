@@ -11,11 +11,9 @@ class UniversalPerceiverBlock(nn.Module):
     增加了 Dropout 以支持对比学习 (SimCSE)
     """
 
-    def __init__(self, input_dim, latent_dim, heads=8, dropout=0.1):
+    def __init__(self, latent_dim, heads=8, dropout=0.1):
         super().__init__()
         self.heads = heads
-
-        self.input_proj = nn.Linear(input_dim, latent_dim) if input_dim != latent_dim else nn.Identity()
 
         # 1. Cross Attention
         self.cross_attn_norm_q = nn.LayerNorm(latent_dim)
@@ -39,12 +37,9 @@ class UniversalPerceiverBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)  # Residual Dropout
 
     def forward(self, latents, context, context_mask=None):
-        # ... (Context Proj) ...
-        context_proj = self.input_proj(context)
-
         # --- Cross Attention ---
         q = self.cross_attn_norm_q(latents)
-        k = v = self.cross_attn_norm_kv(context_proj)
+        k = v = self.cross_attn_norm_kv(context)
         key_padding_mask = (context_mask == 0) if context_mask is not None else None
 
         out_cross, _ = self.cross_attn(query=q, key=k, value=v, key_padding_mask=key_padding_mask)
@@ -65,22 +60,30 @@ class UniversalPerceiverBlock(nn.Module):
 class UniversalPersonaEncoder(nn.Module):
     def __init__(self, input_dim, universal_dim=1024, num_latents=32, num_layers=4, dropout=0.1, heads=8):
         super().__init__()
+        self.input_proj = nn.Linear(input_dim, universal_dim)
         self.universal_dim = universal_dim
         self.num_latents = num_latents
 
         self.latents = nn.Parameter(torch.randn(1, num_latents, universal_dim) * 0.02)
-        self.pos_embed = nn.Embedding(4096, input_dim)
+        self.pos_embed = nn.Embedding(4096, universal_dim)
 
         self.blocks = nn.ModuleList([
-            UniversalPerceiverBlock(input_dim, universal_dim, heads, dropout=dropout)
+            UniversalPerceiverBlock(universal_dim, heads, dropout=dropout)
             for _ in range(num_layers)
         ])
 
     def forward(self, history_embeds, attention_mask=None):
         B, L, D = history_embeds.shape
+
+        # 1. 先投影：将维度统一到 universal_dim
+        history_embeds = self.input_proj(history_embeds)
+
+        # 2. 再加位置编码
         positions = torch.arange(L, device=history_embeds.device).unsqueeze(0).expand(B, -1)
+
         history_embeds = history_embeds + self.pos_embed(positions)
 
+        # 3. 后续处理
         latents = self.latents.repeat(B, 1, 1)
 
         for block in self.blocks:
@@ -96,10 +99,11 @@ class PersonaAdapter(nn.Module):
             nn.LayerNorm(universal_dim),
             nn.Linear(universal_dim, target_dim),
             nn.GELU(),
-            nn.Linear(target_dim, target_dim)
+            nn.Linear(target_dim, target_dim),
+            nn.LayerNorm(target_dim)
         )
-        nn.init.zeros_(self.net[-1].weight)
-        nn.init.zeros_(self.net[-1].bias)
+        nn.init.normal_(self.net[-2].weight, std=1e-4)  # 修改倒数第二层(Linear)
+        nn.init.zeros_(self.net[-2].bias)
 
     def forward(self, universal_latents):
         return self.net(universal_latents)
@@ -158,7 +162,7 @@ class PersonaAgent(nn.Module):
         print(f"Loading Base LLM: {config.base_model}...")
         self.llm = AutoModelForCausalLM.from_pretrained(
             config.base_model,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             trust_remote_code=True,
             device_map="auto"  # 或者由 DDP 控制 device
         )
@@ -242,6 +246,9 @@ class PersonaAgent(nn.Module):
         # 1. 生成 Persona Soft Prompts
         history_embeds = self.llm.get_input_embeddings()(history_input_ids)
 
+        # 强制转 Float32 (为了数值稳定，防止 NaN)
+        history_embeds = history_embeds.to(torch.float32)
+
         # 这里的 mask 传递逻辑要和你 forward 里保持一致
         encoder_out = self.encoder(history_embeds, history_attention_mask)
         soft_prompts = self.adapter(encoder_out)
@@ -249,11 +256,11 @@ class PersonaAgent(nn.Module):
         # 2. 获取当前指令的 Embeddings
         instruction_embeds = self.llm.get_input_embeddings()(instruction_input_ids)
 
+        # 强制转换 inputs_embeds 的类型，使其与 LLM 权重类型 (bfloat16) 一致
+        soft_prompts = soft_prompts.to(self.llm.dtype)
+
         # 3. 拼接 Embeddings
         inputs_embeds = torch.cat([soft_prompts, instruction_embeds], dim=1)
-
-        # 强制转换 inputs_embeds 的类型，使其与 LLM 权重类型 (bfloat16) 一致
-        inputs_embeds = inputs_embeds.to(self.llm.dtype)
 
         # 4. 构造 Attention Mask
         B, N_prompts, _ = soft_prompts.shape
@@ -280,6 +287,9 @@ class PersonaAgent(nn.Module):
         with torch.no_grad():
             history_embeds = self.llm.get_input_embeddings()(history_input_ids)
 
+        # 强制转 Float32 (为了数值稳定，防止 NaN)
+        history_embeds = history_embeds.to(torch.float32)
+
         # 2. View 1 (用于生成的路径)
         latents_1 = self.encoder(history_embeds, history_attention_mask)
         soft_prompts = self.adapter(latents_1)
@@ -294,6 +304,8 @@ class PersonaAgent(nn.Module):
         # 4. 生成路径拼接
         with torch.no_grad():
             inputs_embeds = self.llm.get_input_embeddings()(llm_input_ids)
+
+        soft_prompts = soft_prompts.to(self.llm.dtype)
 
         combined_embeds = torch.cat([soft_prompts, inputs_embeds], dim=1)
 

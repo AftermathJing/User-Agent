@@ -73,7 +73,7 @@ class TrainingConfig:
     # 注意: target_dim 通常由 base_model 自动决定，不需要在此硬编码
 
     # --- C. 对比学习 (Contrastive Learning) ---
-    cl_weight: float = 0.1  # 对比损失在总 Loss 中的权重
+    cl_weight: float = 1  # 对比损失在总 Loss 中的权重
     cl_temp: float = 0.05  # InfoNCE 温度系数
 
     def __post_init__(self):
@@ -225,8 +225,13 @@ def train():
     # E. 优化器与 Scheduler
     # 过滤掉不需要梯度的参数
     trainable_params = [p for p in agent.parameters() if p.requires_grad]
+
     if is_master:
-        print(f"Trainable Parameters: {len(trainable_params)}")
+        # 计算参数总数 (求和 numel)
+        total_params = sum(p.numel() for p in trainable_params)
+
+        # 打印格式化后的结果 (例如: 14,500,200)
+        print(f"Trainable Parameters: {total_params:,}")
 
     optimizer = optim.AdamW(trainable_params, lr=config.lr, weight_decay=config.weight_decay)
 
@@ -312,39 +317,40 @@ def train():
                     })
                     progress_bar.update(1)
 
-                    # === 新增：定期打印生成样例 ===
-                    if global_step % 10 == 0:  # 每 10 步查看一次效果(test)
-                        print(f"\n[Step {global_step}] Generating Sample...")
-
-                        # 1. 从当前 Batch 中取第一条数据 (index 0)
-                        # 注意：要切片保持维度 (1, Seq_Len)
-                        sample_hist_ids = model_inputs['history_input_ids'][0:1]
-                        sample_hist_mask = model_inputs['history_attention_mask'][0:1]
-
-                        # 在 Dataset __getitem__ 里返回 instruction_input_ids
-                        sample_instr_ids = model_inputs['instruction_input_ids'][0:1]
-
-                        # 调用刚才写的 generate_response
-                        # 注意：eval() 模式很重要，关闭 Dropout 保证生成稳定
-                        agent.eval()
-                        with torch.no_grad():
-                            generated_ids = agent.module.generate_response(  # DDP 下要用 agent.module
-                                sample_hist_ids,
-                                sample_hist_mask,
-                                sample_instr_ids
-                            )
-                        agent.train()  # 切回训练模式
-
-                        # 解码
-                        input_text = tokenizer.decode(sample_instr_ids, skip_special_tokens=True)
-                        target_text = tokenizer.decode(model_inputs['llm_input_ids'][0], skip_special_tokens=True)
-                        output_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-
-                        print(f"--- Sample ---")
-                        print(f"Input Prompt: {input_text}...")
-                        print(f"Target (GT):  {target_text}")
-                        print(f"Model Pred:   {output_text}")
-                        print(f"--------------\n")
+                    # # === 新增：定期打印生成样例 ===
+                    # if global_step % 10 == 0:  # 每 10 步查看一次效果(test)
+                    #     print(f"\n[Step {global_step}] Generating Sample...")
+                    #
+                    #     # 1. 从当前 Batch 中取第一条数据 (index 0)
+                    #     # 注意：要切片保持维度 (1, Seq_Len)
+                    #     sample_hist_ids = model_inputs['history_input_ids'][0:1]
+                    #     sample_hist_mask = model_inputs['history_attention_mask'][0:1]
+                    #
+                    #     # 在 Dataset __getitem__ 里返回 instruction_input_ids
+                    #     sample_instr_ids = model_inputs['instruction_input_ids'][0:1]
+                    #
+                    #     # 调用刚才写的 generate_response
+                    #     # 注意：eval() 模式很重要，关闭 Dropout 保证生成稳定
+                    #     agent.eval()
+                    #     with torch.no_grad():
+                    #         generated_ids = agent.module.generate_response(  # DDP 下要用 agent.module
+                    #             sample_hist_ids,
+                    #             sample_hist_mask,
+                    #             sample_instr_ids
+                    #         )
+                    #     agent.train()  # 切回训练模式
+                    #
+                    #     # 解码
+                    #     input_text = tokenizer.decode(sample_instr_ids[0], skip_special_tokens=True)
+                    #     target_text = tokenizer.decode(model_inputs['llm_input_ids'][0], skip_special_tokens=True)
+                    #     output_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+                    #
+                    #     print(f"--- Sample ---")
+                    #     print(f"Input Prompt: {input_text}...")
+                    #     print(f"Target (GT):  {target_text}")
+                    #     print(f"Raw Output: {generated_ids[0]}...")
+                    #     print(f"Model Pred:   {output_text}")
+                    #     print(f"--------------\n")
 
         # Epoch 结束保存
         if is_master:
